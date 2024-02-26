@@ -9,7 +9,7 @@ class DroneControlSim:
     def __init__(self):
         self.sim_time = 10
         self.sim_step = 0.002
-        self.drone_states = np.zeros((int(self.sim_time/self.sim_step), 12))
+        self.drone_states = np.zeros((int(self.sim_time/self.sim_step), 18))    # 以p及dp为状态变量
         self.time= np.zeros((int(self.sim_time/self.sim_step),))
         self.rate_cmd = np.zeros((int(self.sim_time/self.sim_step), 3)) 
         self.attitude_cmd = np.zeros((int(self.sim_time/self.sim_step), 3)) 
@@ -17,12 +17,16 @@ class DroneControlSim:
         self.position_cmd = np.zeros((int(self.sim_time/self.sim_step), 3)) 
         self.pointer = 0 
 
+        self.drone_states[0, 14] = 1
+
         self.I_xx = 2.32e-3
         self.I_yy = 2.32e-3
         self.I_zz = 4.00e-3
         self.m = 0.5
         self.g = 9.8
         self.I = np.array([[self.I_xx, .0,.0],[.0,self.I_yy,.0],[.0,.0,self.I_zz]])
+        self.l = 1.0    # 增加绳长变量
+        self.ml = 0.1    # 增加负载质量变量
 
         self.vel_err = np.zeros((int(self.sim_time/self.sim_step), 3))
         self.pos_err = np.zeros((int(self.sim_time/self.sim_step), 3))
@@ -52,6 +56,8 @@ class DroneControlSim:
 
             self.drone_states[self.pointer+1, ] = self.drone_states[self.pointer, ] + self.sim_step*dx
 
+            # print("thrust = ", thrust_cmd)
+
 
             
         self.time[-1] = self.sim_time
@@ -76,6 +82,13 @@ class DroneControlSim:
         q = self.drone_states[self.pointer,10]
         r = self.drone_states[self.pointer,11]
 
+        px = self.drone_states[self.pointer, 12]
+        py = self.drone_states[self.pointer, 13]
+        pz = self.drone_states[self.pointer, 14]
+        dpx = self.drone_states[self.pointer, 15]
+        dpy = self.drone_states[self.pointer, 16]
+        dpz = self.drone_states[self.pointer, 17]
+
         R_d_angle = np.array([[1,tan(theta)*sin(phi),tan(theta)*cos(phi)],\
                              [0,cos(phi),-sin(phi)],\
                              [0,sin(phi)/cos(theta),cos(phi)/cos(theta)]])
@@ -85,12 +98,35 @@ class DroneControlSim:
                           [sin(phi)*sin(theta)*cos(psi)-cos(phi)*sin(psi),sin(phi)*sin(theta)*sin(psi)+cos(phi)*cos(psi),sin(phi)*cos(theta)],\
                           [cos(phi)*sin(theta)*cos(psi)+sin(phi)*sin(psi),cos(phi)*sin(theta)*sin(psi)-sin(phi)*cos(psi),cos(phi)*cos(theta)]])
 
+        P = np.array([px, py, pz])
+        d_p = np.array([dpx, dpy, dpz])
         d_position = np.array([vx,vy,vz])
-        d_velocity = np.array([.0,.0,self.g]) + R_E_B.transpose()@np.array([.0,.0,T])/self.m
+        # d_velocity = np.array([.0,.0,self.g]) + R_E_B.transpose()@np.array([.0,.0,T])/self.m
+        f = R_E_B.transpose()@np.array([.0,.0,T])
+        d_velocity = np.array([.0,.0,self.g]) + ((np.dot(P, f)-self.m*self.l*np.dot(d_p, d_p))*P)/(self.m + self.ml)    # 加速度式子有改动
+        
+        # print('d_velocity = ', d_velocity)
+        # print('2nd_part = ', ((np.dot(P, f)-self.m*self.l*np.dot(d_p, d_p))*P)/(self.m + self.ml))
+        # print('np.dot(P, f) = ', np.dot(P, f))
+        # print('self.m*self.l*np.dot(d_p, d_p)', (self.m*self.l*np.dot(d_p, d_p)))
+        # print('P = ', P)
+        # print('(np.dot(P, f)-self.m*self.l*np.dot(d_p, d_p))*P = ', (np.dot(P, f)-self.m*self.l*np.dot(d_p, d_p))*P)
+        # print('d_p = ', d_p)
+        # print('f = ', f)
         d_angle = R_d_angle@np.array([p,q,r])
         d_q = np.linalg.inv(self.I)@(M-np.cross(np.array([p,q,r]),self.I@np.array([p,q,r])))
 
-        dx = np.concatenate((d_position,d_velocity,d_angle,d_q))
+        # d_p = np.array([dpx, dpy, dpz])
+        dd_p = -np.dot(d_p, d_p)*d_p + np.cross(P, np.cross(P, f))/self.ml  # 方向向量微分方程
+        r = 0.2 # 风阻系数（貌似有无风阻影响不大）
+        print('dd_p1 = ', dd_p)
+        dd_p = dd_p - r*d_p # 加入风阻后修正加速度项
+        print('dd_p2 = ', dd_p)
+        # dd_p = r*dd_p   # 另一种修正风阻的方法
+
+
+
+        dx = np.concatenate((d_position,d_velocity,d_angle,d_q, d_p, dd_p))
 
         return dx 
 
@@ -131,9 +167,14 @@ class DroneControlSim:
         # Output: M np.array (2,) phi and theta commands and thrust cmd
         self.vel_err[self.pointer, :] = cmd - self.drone_states[self.pointer, 3:6]
 
-        kp = np.array([1.3, -1.2, 7])
-        ki = np.array([0.0001, -0.0001, 0.0001])
-        kd = np.array([5, 5, 1])
+        kp = np.array([0.1, -0.1, 20])
+        ki = np.array([0.0000, 0.0000, 0.1])
+        kd = np.array([0.01, 0.01, .0])
+        # ki = np.array([0.0002, -0.0002, 0.0002])
+        # kd = np.array([0.3, 0.3, 0.5])
+        # kp = np.array([1.3, -1.2, 7])
+        # ki = np.array([0.0001, -0.0001, 0.0001])
+        # kd = np.array([5, 5, 1])
         
         self.attitude_cmd[self.pointer, 0:2] = kp[0:2] * self.vel_err[self.pointer, -2::-1] \
                                              + ki[0:2] * self.vel_err.sum(axis = 0)[-2::-1] \
@@ -152,12 +193,15 @@ class DroneControlSim:
         # Output: M np.array (3,) velocity commands
         current_pos_err = cmd - self.drone_states[self.pointer, 0:3]
         self.pos_err[self.pointer, :] = cmd - self.drone_states[self.pointer, 0:3]
-        kp = np.array([2.2, 2.35, 2.5])
-        ki = np.array([0.00, 0.00, 0.0])
+        kp = np.array([0.6, 0.6, 5.0])  # 经试验，前两维0.6-1.1均可，响应速度/超调两者得一
+        # kp = np.array([2.2, 2.35, 2.5])
+        ki = np.array([0.000, 0.000, 0.0])
+        kd = np.array([10, 10, 0.0])    # kd项增大无法加快动态响应过程
 
         self.velocity_cmd[self.pointer, :] = kp*current_pos_err
         self.velocity_cmd[self.pointer, :] = kp * self.pos_err[self.pointer, :] \
-                                           + ki * self.pos_err.sum(axis = 0)
+                                           + ki * self.pos_err.sum(axis = 0) \
+                                           + kd * (self.pos_err[self.pointer, :] - self.pos_err[self.pointer-1, :])
 
 
 
