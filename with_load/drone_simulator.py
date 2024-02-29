@@ -7,17 +7,15 @@ from math import sin,cos,tan
 
 class DroneControlSim:
     def __init__(self):
-        self.sim_time = 10
+        self.sim_time = 22
         self.sim_step = 0.002
-        self.drone_states = np.zeros((int(self.sim_time/self.sim_step), 18))    # 以p及dp为状态变量
+        self.drone_states = np.zeros((int(self.sim_time/self.sim_step), 24))    # 以p及dp为状态变量
         self.time= np.zeros((int(self.sim_time/self.sim_step),))
         self.rate_cmd = np.zeros((int(self.sim_time/self.sim_step), 3)) 
         self.attitude_cmd = np.zeros((int(self.sim_time/self.sim_step), 3)) 
         self.velocity_cmd = np.zeros((int(self.sim_time/self.sim_step), 3)) 
         self.position_cmd = np.zeros((int(self.sim_time/self.sim_step), 3)) 
         self.pointer = 0 
-
-        self.drone_states[0, 14] = 1
 
         self.I_xx = 2.32e-3
         self.I_yy = 2.32e-3
@@ -27,6 +25,9 @@ class DroneControlSim:
         self.I = np.array([[self.I_xx, .0,.0],[.0,self.I_yy,.0],[.0,.0,self.I_zz]])
         self.l = 1.0    # 增加绳长变量
         self.ml = 0.1    # 增加负载质量变量
+
+        self.drone_states[0, 14] = 1    # 设置方向向量初值
+        self.drone_states[0, 18:21] = self.drone_states[0, 0:3] + self.drone_states[0, 12:15] * self.l  # 设置负载位置初值
 
         self.vel_err = np.zeros((int(self.sim_time/self.sim_step), 3))
         self.pos_err = np.zeros((int(self.sim_time/self.sim_step), 3))
@@ -43,18 +44,30 @@ class DroneControlSim:
             self.position_controller(self.position_cmd[self.pointer, :])
 
             # self.velocity_cmd[self.pointer, :] = np.array([1, 1, 1])    # test velocity loop
+            # if self.pointer % 10 == 0:
+            #     print('velocity = ', self.drone_states[self.pointer, 3:6])    # test velocity loop
             thrust_cmd = self.velocity_controller(self.velocity_cmd[self.pointer, :])
 
             # thrust_cmd = -1*self.g*self.m   # test attitude loop
             # self.attitude_cmd[self.pointer, :] = np.array([2, 2, 1])    # test attitude loop
+            # print('attitude = ', self.drone_states[self.pointer, 6:9])    # test attitude loop
             self.attitude_controller(self.attitude_cmd[self.pointer, :])
 
             # self.rate_cmd[self.pointer, :] = np.array([1.0, 1.0, 1.0])  # test rate loop
+            # print('rate = ', self.drone_states[self.pointer, 9: 12])  # test rate loop
             M = self.rate_controller(self.rate_cmd[self.pointer, :])
 
             dx = self.drone_dynamics(thrust_cmd, M)
 
+            # if np.linalg.norm(self.drone_states[self.pointer, 12:15]) > 1:    # 方向向量模长超过1
+            #     self.drone_states[self.pointer, 12:15] = self.drone_states[self.pointer, 12:15] / np.linalg.norm(self.drone_states[self.pointer, 12:15])
+            #     print('P1 = ', self.drone_states[self.pointer, 12:15])
+
             self.drone_states[self.pointer+1, ] = self.drone_states[self.pointer, ] + self.sim_step*dx
+
+            # if np.linalg.norm(self.drone_states[self.pointer+1, 12:15]) > 1:    # 方向向量模长超过1
+            #     self.drone_states[self.pointer+1, 12:15] = self.drone_states[self.pointer+1, 12:15] / np.linalg.norm(self.drone_states[self.pointer+1, 12:15])
+            #     print('P2 = ', self.drone_states[self.pointer + 1, 12:15])
 
             # print("thrust = ", thrust_cmd)
 
@@ -69,6 +82,7 @@ class DroneControlSim:
         # M: np.array (3,)  Moments in three axes
         # Output: np.array (12,) the derivative (dx) of the drone 
         
+        # 无人机状态量
         x = self.drone_states[self.pointer,0]
         y = self.drone_states[self.pointer,1]
         z = self.drone_states[self.pointer,2]
@@ -82,12 +96,22 @@ class DroneControlSim:
         q = self.drone_states[self.pointer,10]
         r = self.drone_states[self.pointer,11]
 
+        # 绳方向状态量
         px = self.drone_states[self.pointer, 12]
         py = self.drone_states[self.pointer, 13]
         pz = self.drone_states[self.pointer, 14]
         dpx = self.drone_states[self.pointer, 15]
         dpy = self.drone_states[self.pointer, 16]
         dpz = self.drone_states[self.pointer, 17]
+
+        # 负载状态量
+        xl = self.drone_states[self.pointer, 18]
+        yl = self.drone_states[self.pointer, 19]
+        zl = self.drone_states[self.pointer, 20]
+        vxl = self.drone_states[self.pointer, 21]
+        vyl = self.drone_states[self.pointer, 22]
+        vzl = self.drone_states[self.pointer, 23]
+
 
         R_d_angle = np.array([[1,tan(theta)*sin(phi),tan(theta)*cos(phi)],\
                              [0,cos(phi),-sin(phi)],\
@@ -99,34 +123,67 @@ class DroneControlSim:
                           [cos(phi)*sin(theta)*cos(psi)+sin(phi)*sin(psi),cos(phi)*sin(theta)*sin(psi)-sin(phi)*cos(psi),cos(phi)*cos(theta)]])
 
         P = np.array([px, py, pz])
+        # print('P1 = ', P)
+        # if np.linalg.norm(P) > 1:    # 方向向量模长超过1
+            # P = P / np.linalg.norm(P)
+            # print('P2 = ', P)
+
+        
+
         d_p = np.array([dpx, dpy, dpz])
+
+        # print('P*d_p = ', P*d_p)
         d_position = np.array([vx,vy,vz])
         # d_velocity = np.array([.0,.0,self.g]) + R_E_B.transpose()@np.array([.0,.0,T])/self.m
         f = R_E_B.transpose()@np.array([.0,.0,T])
-        d_velocity = np.array([.0,.0,self.g]) + ((np.dot(P, f)-self.m*self.l*np.dot(d_p, d_p))*P)/(self.m + self.ml)    # 加速度式子有改动
+        d_position_l = np.array([vxl, vyl, vzl])
+        d_velocity_l = np.array([.0,.0,self.g]) + ((np.dot(P, f)-self.m*self.l*np.dot(d_p, d_p))*P)/(self.m + self.ml)    # 加速度式子有改动
+        dd_p = -np.dot(d_p, d_p)*d_p + np.cross(P, np.cross(P, f))/self.m  # 方向向量微分方程
+
+        # r = 0.2 # 风阻系数（貌似有无风阻影响不大）
+        # print('dd_p1 = ', dd_p)
+        # dd_p = dd_p - r*d_p # 加入风阻后修正加速度项
+        # print('dd_p2 = ', dd_p)
+        # dd_p = r*dd_p   # 另一种修正风阻的方法
+
+        d_velocity = d_velocity_l - self.l * dd_p   # 无人机加速度与负载加速度关系式
         
-        # print('d_velocity = ', d_velocity)
-        # print('2nd_part = ', ((np.dot(P, f)-self.m*self.l*np.dot(d_p, d_p))*P)/(self.m + self.ml))
-        # print('np.dot(P, f) = ', np.dot(P, f))
-        # print('self.m*self.l*np.dot(d_p, d_p)', (self.m*self.l*np.dot(d_p, d_p)))
-        # print('P = ', P)
-        # print('(np.dot(P, f)-self.m*self.l*np.dot(d_p, d_p))*P = ', (np.dot(P, f)-self.m*self.l*np.dot(d_p, d_p))*P)
-        # print('d_p = ', d_p)
-        # print('f = ', f)
+        
         d_angle = R_d_angle@np.array([p,q,r])
         d_q = np.linalg.inv(self.I)@(M-np.cross(np.array([p,q,r]),self.I@np.array([p,q,r])))
 
+        # print('postion = ', self.drone_states[self.pointer, 0:3])
+        # print('positon_l = ', self.drone_states[self.pointer, 18:21])
+
+        # print('P = ', self.drone_states[self.pointer, 12:15])
+        print('d_position_l - d_position', self.drone_states[self.pointer, 18:21] - self.drone_states[self.pointer, 3:6])
+        print('d_p = ', d_p)
+        print('position - position_l = ', self.drone_states[self.pointer, 0:3] - self.drone_states[self.pointer, 18:21])
+        
+        print('error = ', self.drone_states[self.pointer, 0:3] - self.drone_states[self.pointer, 18:21] + self.drone_states[self.pointer, 12:15])
+        # if self.pointer == 0:
+        #     print('error_0 = ', self.drone_states[0, 0:3] - self.drone_states[0, 18:21] - self.drone_states[0, 12:15])
+
         # d_p = np.array([dpx, dpy, dpz])
-        dd_p = -np.dot(d_p, d_p)*d_p + np.cross(P, np.cross(P, f))/self.ml  # 方向向量微分方程
-        r = 0.2 # 风阻系数（貌似有无风阻影响不大）
-        print('dd_p1 = ', dd_p)
-        dd_p = dd_p - r*d_p # 加入风阻后修正加速度项
-        print('dd_p2 = ', dd_p)
-        # dd_p = r*dd_p   # 另一种修正风阻的方法
+        
+        
+
+        
+
+        # if self.pointer <= 150:
+        #     print('d_velocity = ', d_velocity)
+        #     print('2nd_part = ', ((np.dot(P, f)-self.m*self.l*np.dot(d_p, d_p))*P)/(self.m + self.ml))
+        #     print('np.dot(P, f) = ', np.dot(P, f))
+        #     print('self.m*self.l*np.dot(d_p, d_p)', (self.m*self.l*np.dot(d_p, d_p)))
+        #     print('P = ', P)
+        #     print('(np.dot(P, f)-self.m*self.l*np.dot(d_p, d_p))*P = ', (np.dot(P, f)-self.m*self.l*np.dot(d_p, d_p))*P)
+        #     print('d_p = ', d_p)
+        #     print('f = ', f)
+        #     print('')
 
 
 
-        dx = np.concatenate((d_position,d_velocity,d_angle,d_q, d_p, dd_p))
+        dx = np.concatenate((d_position, d_velocity, d_angle, d_q, d_p, dd_p, d_position_l, d_velocity_l))
 
         return dx 
 
@@ -156,7 +213,7 @@ class DroneControlSim:
                 cmd[i] = -1
 
         current_att_err = cmd - self.drone_states[self.pointer, 6:9]
-        kp = np.array([10, 10, 15])
+        kp = np.array([8, 8, 12])
 
         self.rate_cmd[self.pointer, :] = kp*current_att_err
         
@@ -167,9 +224,10 @@ class DroneControlSim:
         # Output: M np.array (2,) phi and theta commands and thrust cmd
         self.vel_err[self.pointer, :] = cmd - self.drone_states[self.pointer, 3:6]
 
-        kp = np.array([0.1, -0.1, 20])
-        ki = np.array([0.0000, 0.0000, 0.1])
-        kd = np.array([0.01, 0.01, .0])
+        kp = np.array([0.09, -0.09, 15])
+        # kp = np.array([0.5, 0.5, 5])    # p无限幅时参数
+        ki = np.array([0.0000, 0.0000, 0.01])
+        kd = np.array([1, 1, 0.01])
         # ki = np.array([0.0002, -0.0002, 0.0002])
         # kd = np.array([0.3, 0.3, 0.5])
         # kp = np.array([1.3, -1.2, 7])
@@ -193,10 +251,10 @@ class DroneControlSim:
         # Output: M np.array (3,) velocity commands
         current_pos_err = cmd - self.drone_states[self.pointer, 0:3]
         self.pos_err[self.pointer, :] = cmd - self.drone_states[self.pointer, 0:3]
-        kp = np.array([0.6, 0.6, 5.0])  # 经试验，前两维0.6-1.1均可，响应速度/超调两者得一
+        kp = np.array([0.6, 0.8, 1.5])  # 经试验，
         # kp = np.array([2.2, 2.35, 2.5])
         ki = np.array([0.000, 0.000, 0.0])
-        kd = np.array([10, 10, 0.0])    # kd项增大无法加快动态响应过程
+        kd = np.array([0., 0., 0.0])    # 
 
         self.velocity_cmd[self.pointer, :] = kp*current_pos_err
         self.velocity_cmd[self.pointer, :] = kp * self.pos_err[self.pointer, :] \
@@ -251,6 +309,39 @@ class DroneControlSim:
         ax1[3,2].plot(self.time,self.drone_states[:,11])
         ax1[3,2].plot(self.time,self.rate_cmd[:,2])
         ax1[3,0].set_ylabel('r[rad/s]')
+
+        fig2, ax2 = plt.subplots(4,3)
+        ax2[0,0].plot(self.time,self.drone_states[:,12])
+        ax2[0,0].set_ylabel('px[m]')
+        ax2[0,1].plot(self.time,self.drone_states[:,13])
+        ax2[0,1].set_ylabel('py[m]')
+        ax2[0,2].plot(self.time,self.drone_states[:,14])
+        ax2[0,2].set_ylabel('pz[m]')    
+
+        ax2[1,0].plot(self.time,self.drone_states[:,15])
+        ax2[1,0].set_ylabel('v_px[m]')
+        ax2[1,1].plot(self.time,self.drone_states[:,16])
+        ax2[1,1].set_ylabel('v_py[m]')
+        ax2[1,2].plot(self.time,self.drone_states[:,17])
+        ax2[1,2].set_ylabel('v_pz[m]')
+        
+
+        ax2[2,0].plot(self.time,self.drone_states[:,18])
+        ax2[2,0].set_ylabel('xl[m]')
+        ax2[2,1].plot(self.time,self.drone_states[:,19])
+        ax2[2,1].set_ylabel('yl[m]')
+        ax2[2,2].plot(self.time,self.drone_states[:,20])
+        ax2[2,2].set_ylabel('zl[m]')
+        
+
+        ax2[3,0].plot(self.time,self.drone_states[:,21])
+        ax2[3,0].set_ylabel('vl_x[m]')
+        ax2[3,1].plot(self.time,self.drone_states[:,22])
+        ax2[3,1].set_ylabel('vl_y[m]')
+        ax2[3,2].plot(self.time,self.drone_states[:,23])
+        ax2[3,2].set_ylabel('vl_z[m]')
+
+
 
 if __name__ == "__main__":
     drone = DroneControlSim()
